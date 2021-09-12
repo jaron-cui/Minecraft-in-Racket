@@ -1,6 +1,6 @@
 ;; The first three lines of this file were inserted by DrRacket. They record metadata
 ;; about the language level of this file in a form that our tools can easily process.
-#reader(lib "htdp-intermediate-lambda-reader.ss" "lang")((modname MinecraftInRacket) (read-case-sensitive #t) (teachpacks ()) (htdp-settings #(#t constructor repeating-decimal #f #t none #f () #f)))
+#reader(lib "htdp-intermediate-lambda-reader.ss" "lang")((modname |Render Test TA|) (read-case-sensitive #t) (teachpacks ()) (htdp-settings #(#t constructor repeating-decimal #f #t none #f () #f)))
 (require 2htdp/image)
 (require 2htdp/universe)
 
@@ -89,18 +89,6 @@
             (expt (accessor (entity-vel entity)) 2))]
     (sqrt (+ (sqr-field xyz-x) (sqr-field xyz-y)))))
 
-(define (accelerate entity axis acceleration limit)
-  (local [(define vel (entity-vel entity))
-          (define axis-vel (axis vel))
-          (define new-vel
-            (if (>= (abs axis-vel) limit)
-                vel (local [(define incremented (+ axis-vel acceleration))
-                            (define set-axis (axis xyz-setters))]
-                      (if (>= (abs incremented) limit)
-                          (set-axis vel (* (sign incremented) limit))
-                          (set-axis vel incremented)))))]
-    (set-vel entity new-vel)))
-
 ; accelerate-horizontally : Entity Number Number Number -> Entity
 ; Accelerates the entity in a horizontal direction with a speed limit.
 (define (accelerate-horizontally entity direction acceleration limit)
@@ -114,10 +102,9 @@
                     (define unlimited (+ axis-vel accel))
                     (define unlimited-mag (abs unlimited))]
               (if (and (>= unlimited-mag axis-speed) (>= unlimited-mag limited))
-                  limited unlimited)))
-          (define (accelerate-axis entity axis scale)
-            (accelerate entity axis (* scale acceleration) (abs (* scale limit))))]
-    (accelerate-axis (accelerate-axis entity xyz-y (deg-sin direction)) xyz-x (deg-cos direction))))
+                  limited unlimited)))]
+    (set-vel entity (make-xyz (limited-accel xyz-x (deg-cos direction))
+                              (limited-accel xyz-y (deg-sin direction)) (xyz-z vel)))))
 
 #;(define (accelerate entity direction acceleration limit))
 
@@ -240,8 +227,6 @@
          (xyz? (search-block-layers world solid? ground-level ground-level
                                     x-start y-start x-end y-end xyz-z xyz-x xyz-y)))))
 
-(define ground-friction .3)
-
 (define (step-entity-physics ungravitated world)
   (local [(define entity (set-vel ungravitated (add-z (entity-vel ungravitated) gravity)))
           (define pos (entity-pos entity))
@@ -267,7 +252,7 @@
                   0 (- axis-vel (* (sign axis-vel) friction)))))
           
           (define new-pos (make-xyz (new-axis-pos xyz-x) (new-axis-pos xyz-y) (new-axis-pos xyz-z)))
-          (define new-vel (make-xyz (new-axis-vel xyz-x ground-friction) (new-axis-vel xyz-y ground-friction)
+          (define new-vel (make-xyz (new-axis-vel xyz-x 1) (new-axis-vel xyz-y 1)
                                     (new-axis-vel xyz-z 0)))]
     (set-pos (set-vel entity new-vel) new-pos)))
 
@@ -1045,7 +1030,7 @@
 
 (define chunkgen-solid-below (λ (top) (λ (pos) (if (<= (xyz-z pos) top) 1 0))))
 
-(define walk-accel (+ ground-friction .3))
+(define walk-accel .5)
 (define walk-speed 2)
 (define jump-speed 4)
 
