@@ -72,7 +72,7 @@
                angle (entity-faces entity)))
 
 ; PHYSICS
-(define gravity -.1)
+(define gravity -.4)
 (define make-steve (λ (pos) (tp (spawn "steve" (make-xyz .3 .3 1) '()) pos)))
 
 #;(define (set-collider-pos collider new-pos)
@@ -208,8 +208,28 @@
           (- delta (* (sign delta) (* (+ (axis (entity-rads entity)) .5) block-size))));(error (- delta (* (sign delta) (+ (axis (entity-rads entity)) .5))) " " axis-at " " delta))
         #f)))
 
-(define (step-entity-physics entity world)
+;(search-block-layers world condition? from to from1 from2 to1 to2 axis perif1 perif2)
+(define (grounded? entity world)
   (local [(define pos (entity-pos entity))
+          (define x (xyz-x pos))
+          (define y (xyz-y pos))
+          (define rads (entity-rads entity))
+          (define foot-z (- (/ (xyz-z pos) block-size) (xyz-z rads)))
+          (define xrad (xyz-x rads))
+          (define yrad (xyz-y rads))
+          
+          (define ground-level (- foot-z .5))
+          (define x-start (round-toward (- x xrad) 1))
+          (define x-end (round-toward (+ x xrad) -1))
+          (define y-start (round-toward (- y yrad) 1))
+          (define y-end (round-toward (+ y yrad) -1))]
+    (and (integer? ground-level)
+         (xyz? (search-block-layers world solid? ground-level ground-level
+                                    x-start y-start x-end y-end xyz-z xyz-x xyz-y)))))
+
+(define (step-entity-physics ungravitated world)
+  (local [(define entity (set-vel ungravitated (add-z (entity-vel ungravitated) gravity)))
+          (define pos (entity-pos entity))
           (define vel (entity-vel entity))
           
           (define (find-axis-collision-vel axis perif1 perif2)
@@ -499,6 +519,7 @@
 
 (define width 900)
 (define height 600)
+(define screen-tolerance 30)
 (define background (rectangle width height "solid" "lightblue"))
 (define block-size 16)
 
@@ -629,7 +650,7 @@
                         (define da (xyz-angle-diff (entity-angle player)
                                                    (xyz-angle-to (entity-pos player) (first verts))))
                         (define rest-verts (map-verts (rest verts) player))]
-                  (if (and (< (abs (xyz-z da)) fov-rad) (in-bounds? mapped))
+                  (if (and (< (abs (xyz-z da)) (+ fov-rad 15)) (in-bounds? mapped))
                       (cons mapped rest-verts) rest-verts))])))
 
 ; in-bounds? : Posn -> Boolean
@@ -637,7 +658,8 @@
 (define (in-bounds? posn)
   (local [(define x (posn-x posn))
           (define y (posn-y posn))]
-    (and (> x 0) (> y 0) (< x width) (< y height))))
+    (and (> x (- screen-tolerance)) (> y (- screen-tolerance))
+         (< x (+ width screen-tolerance)) (< y (+ width screen-tolerance)))))
 
 ; render-face-onto : Face Image Vector -> Image
 ; Renders a face onto an image given a camera angle.
@@ -1008,8 +1030,9 @@
 
 (define chunkgen-solid-below (λ (top) (λ (pos) (if (<= (xyz-z pos) top) 1 0))))
 
-(define walk-accel 2)
-(define walk-speed 4)
+(define walk-accel .5)
+(define walk-speed 2)
+(define jump-speed 4)
 
 (define walk-action
   (λ (direction)
@@ -1017,28 +1040,41 @@
       (accelerate-horizontally player (+ (horizontal-direction player) direction)
                                walk-accel walk-speed))))
 
+(define to-player
+  (λ (action)
+    (λ (save)
+      (set-save-player save (action (save-player save))))))
+
 (define keymap
   (make-linmap string=?
-               (list (make-pair "w" (walk-action 0))
-                     (make-pair "a" (walk-action 90))
-                     (make-pair "s" (walk-action 180))
-                     (make-pair "d" (walk-action 270))
+               (list (make-pair "w" (to-player (walk-action 0)))
+                     (make-pair "a" (to-player (walk-action 90)))
+                     (make-pair "s" (to-player (walk-action 180)))
+                     (make-pair "d" (to-player (walk-action 270)))
+                     (make-pair
+                      " "
+                      (λ (save)
+                        (local [(define player (save-player save))]
+                          (if (grounded? player (save-world save))
+                              (set-save-player
+                               save (set-vel player (add-z (entity-vel player) jump-speed)))
+                              save))))
                      (make-pair
                       "up"
-                      (λ (player)
-                        (pan-vertically player (- pan-speed))))
+                      (to-player (λ (player)
+                                   (pan-vertically player (- pan-speed)))))
                      (make-pair
                       "down"
-                      (λ (player)
-                        (pan-vertically player pan-speed)))
+                      (to-player(λ (player)
+                                  (pan-vertically player pan-speed))))
                      (make-pair
                       "left"
-                      (λ (player)
-                        (pan-horizontally player pan-speed)))
+                      (to-player (λ (player)
+                                   (pan-horizontally player pan-speed))))
                      (make-pair
                       "right"
-                      (λ (player)
-                        (pan-horizontally player (- pan-speed)))))))
+                      (to-player (λ (player)
+                                   (pan-horizontally player (- pan-speed))))))))
 
 (define (action-logger save key)
   (local [(define (log-action action)
@@ -1070,13 +1106,9 @@
 ; Actions boolean
 (define (process-actions save)
   (local [(define actions (save-actions save))
-          (define player (save-player save))
-          (define new-player
-            (fold-over-map
-             actions
-             (λ (_ modify-player prev-player) (modify-player prev-player))
-             player))]
-    (set-save-player save (step-entity-physics new-player (save-world save)))))
+          (define player (save-player save))]
+    (fold-over-map actions (λ (_ do-action old-save) (do-action old-save))
+                   (set-save-player save (step-entity-physics (save-player save) (save-world save))))))
 
 (define (set-collider entity collider)
   (make-entity (entity-id entity) collider (entity-angle entity) (entity-faces entity)))
@@ -1111,7 +1143,10 @@
                        (gen-chunk 1 (make-xyz -1 -1 0))
                        (gen-chunk 1 (make-xyz -1 0 0))
                        (gen-chunk 1 (make-xyz 0 0 0)) '()))
-(define chunks (list (gen-chunk-terrain-faces (set-chunk-block (gen-chunk (make-xyz 0 0 0) (chunkgen-solid-below 0)) (make-xyz 5 5 2) 1))))
+(define chunk0 (gen-chunk (make-xyz 0 0 0) (chunkgen-solid-below 0)))
+(define chunk1 (set-chunk-block chunk0 (make-xyz 5 5 2) 1))
+(define chunk2 (set-chunk-block chunk1 (make-xyz 5 6 1) 1))
+(define chunks (list (gen-chunk-terrain-faces chunk2)))
 (define world0 (make-world chunks))
 
 (big-bang (make-save (set-vel (make-steve (make-xyz 5 4 1.5)) (make-xyz 0 0 -.1)) world0 (make-linmap string=? '()))
