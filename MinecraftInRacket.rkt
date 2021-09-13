@@ -130,13 +130,19 @@
   (make-xyz (xyz-x xyz) (xyz-y xyz) z))
 (define xyz-setters (make-xyz set-x set-y set-z))
 
+(define (round-custom edge-case)
+  (λ (num) (local [(define low (floor num))
+                   (define high (ceiling num))
+                   (define diff (- num low))]
+             (cond [(= diff .5) (edge-case num low high)]
+                   [(< diff .5) low]
+                   [else high]))))
+
+(define round-down (round-custom (λ (num low high) low)))
+(define round-up (round-custom (λ (num low high) high)))
+
 (define (round-toward num direction)
-  (local [(define low (floor num))
-          (define high (ceiling num))
-          (define diff (- num low))]
-    (cond [(= diff .5) (if (< direction 0) low high)]
-          [(< diff .5) low]
-          [else high])))
+  ((if (< direction 0) round-down round-up) num))
 
 (define (search-block-layer world condition? axis-pos from1 from2 to1 to2 axis perif1 perif2)
   (local [(define start1 (min from1 to1))
@@ -195,10 +201,10 @@
                 (define perif1-rad (perif1 rads))
                 (define perif2-pos (perif2 pos))
                 (define perif2-rad (perif2 rads))
-                (define perif1-start (round-toward (- perif1-pos perif1-rad) 1))
-                (define perif1-end (round-toward (+ perif1-pos perif1-rad) -1))
-                (define perif2-start (round-toward (- perif2-pos perif2-rad) 1))
-                (define perif2-end (round-toward (+ perif2-pos perif2-rad) -1))
+                (define perif1-start (round-up (- perif1-pos perif1-rad)))
+                (define perif1-end (round-down (+ perif1-pos perif1-rad)))
+                (define perif2-start (round-up (- perif2-pos perif2-rad)))
+                (define perif2-end (round-down (+ perif2-pos perif2-rad)))
                 (define hitbox-edge (+ axis-pos (* s axis-rad)))
                 (define possible-dest (+ hitbox-edge vel))
                 (define axis-start (round-toward (+ hitbox-edge s) (- s)))
@@ -223,22 +229,28 @@
 
 ;(search-block-layers world condition? from to from1 from2 to1 to2 axis perif1 perif2)
 (define (grounded? entity world)
-  (local [(define pos (entity-pos entity))
+  (local [(define pos (scale-xyz (entity-pos entity) (/ 1 block-size)))
           (define x (xyz-x pos))
           (define y (xyz-y pos))
           (define rads (entity-rads entity))
-          (define foot-z (- (/ (xyz-z pos) block-size) (xyz-z rads)))
+          (define foot-z (- (xyz-z pos) (xyz-z rads)))
           (define xrad (xyz-x rads))
           (define yrad (xyz-y rads))
           
           (define ground-level (- foot-z .5))
-          (define x-start (round-toward (- x xrad) 1))
-          (define x-end (round-toward (+ x xrad) -1))
-          (define y-start (round-toward (- y yrad) 1))
-          (define y-end (round-toward (+ y yrad) -1))]
+          (define x-start (round-up (- x xrad)))
+          (define x-end (round-down (+ x xrad)))
+          (define y-start (round-up (- y yrad)))
+          (define y-end (round-down (+ y yrad)))]
     (and (integer? ground-level)
          (xyz? (search-block-layers world solid? ground-level ground-level
                                     x-start y-start x-end y-end xyz-z xyz-x xyz-y)))))
+
+#;(define (cursor-blockface-intersects pos angle world fax hax vax)
+  (local [()]))
+
+#;(define (cursor-block player world)
+  (local [(define pos (entity-pos player))]))
 
 (define ground-friction .3)
 
