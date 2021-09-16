@@ -17,8 +17,8 @@
 ; A Save is a (make-save Vector World [Map-of Key [Save -> Save]]) that represents game data where 'cam' is the player view
 ; orientation and 'world' is the world data.
 
-(define-struct face (origin points))
-; A Face is a (make-face Angle [List-of Position]) and represents a geometric face in 3D space.
+(define-struct face (origin points color))
+; A Face is a (make-face Position [List-of Position] Color) and represents a geometric face in 3D space.
 
 (define-struct f-group (id pos faces))
 ; A [FaceGroup X] is a (make-f-group X Position [List-of Face]) and represents a grouping of faces
@@ -246,13 +246,71 @@
          (xyz? (search-block-layers world solid? ground-level ground-level
                                     x-start y-start x-end y-end xyz-z xyz-x xyz-y)))))
 
-#;(define (cursor-blockface-intersects pos angle world fax hax vax)
-  (local [()]))
+(define cursor-range 8)
+
+(define (<=others subject a b)
+  (and (<= subject a) (<= subject b)))
+#;(define (<=others subject a b)
+    (local [(define mag (abs subject))]
+      (and (<= mag (abs a)) (<= mag (abs b)))))
+(define (cursor-blockface-intersects pos pitch yaw world)
+  (local [(define (round-to-blockface coord dir)
+            (+ (round-toward (- coord (* dir .5)) dir) (* dir .5)))
+
+          (define xy-scale (abs (deg-cos pitch)))
+          (define x-dist (* xy-scale cursor-range (deg-cos yaw)))
+          (define y-dist (* xy-scale cursor-range (deg-sin yaw)))
+          (define z-dist (* cursor-range (deg-sin (- pitch))))
+          (define x-sign (sign x-dist))
+          (define y-sign (sign y-dist))
+          (define z-sign (sign z-dist))
+          (define distances (make-xyz x-dist y-dist z-dist))
+
+          (define (relative-start axis)
+            (- (round-to-blockface (axis pos) (sign (axis distances))) (axis pos)))
+
+          (define (block-pos-at-ratio ratio)
+            (local [(define (helper axis)
+                      (round-toward (+ (* ratio (axis distances)) (axis pos)) (axis distances)))]
+              (make-xyz (helper xyz-x) (helper xyz-y) (helper xyz-z))))
+          (define (divide-or-2 dividend divisor)
+            (if (= divisor 0)
+                2 (/ dividend divisor)))
+          (define (search x-face y-face z-face)
+            (local [(define x-ratio (divide-or-2 x-face x-dist))
+                    (define y-ratio (divide-or-2 y-face y-dist))
+                    (define z-ratio (divide-or-2 z-face z-dist))
+                    (define (iterate ratio new-x-face new-y-face new-z-face)
+                      (if (<= (abs ratio) 1)
+                          (local [(define block-pos (block-pos-at-ratio ratio))]
+                            (if (solid? (get-world-block world block-pos))
+                                (local [(define (h val)
+                                          (if (= val (- (ceiling val) .5)) val (round val)))]
+                                  (xyz-map (add-xyz pos (scale-xyz distances ratio)) h))
+                                (search new-x-face new-y-face new-z-face)))
+                          #f))]
+              (cond [(<=others x-ratio y-ratio z-ratio)
+                     (iterate x-ratio (+ x-face x-sign) y-face z-face)]
+                    [(<=others y-ratio x-ratio z-ratio)
+                     (iterate y-ratio x-face (+ y-face y-sign) z-face)]
+                    [(<=others z-ratio x-ratio y-ratio)
+                     (iterate z-ratio x-face y-face (+ z-face z-sign))])))]
+    (search (relative-start xyz-x) (relative-start xyz-y) (relative-start xyz-z))
+    ))
+
+(define (f save)
+  (local [(define player (save-player save))
+          (define world (save-world save))]
+    (cursor-blockface-intersects
+     (realpos->blockpos (entity-pos player))
+     (xyz-x (entity-angle player))
+     (xyz-z (entity-angle player))
+     world)))
 
 #;(define (cursor-block player world)
-  (local [(define pos (entity-pos player))]))
+    (local [(define pos (entity-pos player))]))
 
-(define ground-friction .3)
+(define ground-friction .3) ;.3)
 
 (define (step-entity-physics ungravitated world)
   (local [(define entity (set-vel ungravitated (add-z (entity-vel ungravitated) gravity)))
@@ -369,10 +427,10 @@
 
 ; get-world-block : World Position -> Block
 (define (get-world-block world pos)
-  (local [(define block-pos (xyz-map pos (λ (axis) (remainder axis (* 16 block-size)))))
+  (local [(define local-pos (xyz-map pos (λ (axis) (modulo axis 16))))
           (define chunk (chunk-at-block pos world))]
     (if (chunk? chunk)
-        (get-chunk-block chunk block-pos) 1)))
+        (get-chunk-block chunk local-pos) 1)))
 
 (define (chunk-at-block pos world)
   (find-first (λ (chunk) (xyz=? (chunk-pos chunk) (xyz-map pos (λ (val) (floor-div val 16)))))
@@ -467,7 +525,7 @@
             (+ (accessor a) (accessor b)))]
     (make-xyz (add-axis xyz-x) (add-axis xyz-y) (add-axis xyz-z))))
 
-(define (gen-block-face origin type base-add axis1-add axis2-add)
+(define (gen-block-face origin color base-add axis1-add axis2-add)
   (local [(define rad (/ block-size 2))
           (define center (base-add origin rad))
           (define wing-a (axis1-add center rad))
@@ -476,7 +534,7 @@
           (define p2 (axis2-add wing-b rad))
           (define p3 (axis2-add wing-b (- rad)))
           (define p4 (axis2-add wing-a (- rad)))]
-    (make-face center (list p1 p2 p3 p4))))
+    (make-face center (list p1 p2 p3 p4) color)))
 
 
 ; cull-nonfacing : [FaceGroup Position] Position -> [FaceGroup Number]
@@ -519,6 +577,41 @@
       (make-chunk (chunk-pos chunk) (chunk-blocks chunk) (chunk-entities chunk) ;(gen-x 0 '())
                   (chunk-entity-faces chunk))))
 
+(define-struct block-texture (id top bottom side1 side2 side3 side4))
+(define top block-texture-top)
+(define bottom block-texture-bottom)
+(define side1 block-texture-side1)
+(define side2 block-texture-side1)
+(define side3 block-texture-side1)
+(define side4 block-texture-side1)
+
+(define (monocolor-texture id color)
+  (make-block-texture id color color color color color color))
+
+(define grass-texture
+  (make-block-texture
+   1 "forest green" "sienna" "sienna" "sienna" "sienna" "sienna"))
+(define stone-texture (monocolor-texture 2 "light slate gray"))
+(define sand-texture (monocolor-texture 3 "beige"))
+(define dirt-texture (monocolor-texture 4 "sienna"))
+(define wood-texture
+  (make-block-texture
+   5 "burlywood" "burlywood" "saddle brown" "saddle brown" "saddle brown" "saddle brown"))
+(define leaves-texture (monocolor-texture 6 "dark olive green"))
+(define water-texture (monocolor-texture 7 "teal"))
+
+
+(define block-textures (list grass-texture stone-texture sand-texture dirt-texture wood-texture
+                             leaves-texture water-texture))
+
+(define (get-block-texture type side)
+  (local [(define (search textures)
+            (cond [(empty? textures) "pink"]
+                  [(cons? textures) (local [(define texture (first textures))]
+                                      (if (= (block-texture-id texture) type)
+                                          (side texture) (search (rest textures))))]))]
+    (search block-textures)))
+
 ; gen-block-exposed-faces : Block Integer Integer Integer -> [FaceGroup Position]
 ; Generates a face group containing all exposed faces of the block identified by the block origin
 ; in actual global coordinates.
@@ -527,22 +620,24 @@
           (define origin
             (scale-xyz global-pos block-size))
           
-          (define (gen-if-exposed add-facing add-side1 add-side2 base)
+          (define (gen-if-exposed add-facing add-side1 add-side2 side base)
             (if (air? (get-chunk-block chunk (add-facing local-pos 1)))
-                (cons (gen-block-face origin type add-facing add-side1 add-side2) base) base))
+                (cons (gen-block-face origin
+                                      (get-block-texture type side)
+                                      add-facing add-side1 add-side2) base) base))
           
-          (define f1 (gen-if-exposed add-x add-y add-z '()))
-          (define f2 (gen-if-exposed add-y add-x add-z f1))
-          (define f3 (gen-if-exposed add-z add-x add-y f2))
-          (define f4 (gen-if-exposed sub-x add-y add-z f3))
-          (define f5 (gen-if-exposed sub-y add-x add-z f4))
-          (define f6 (gen-if-exposed sub-z add-x add-y f5))]
+          (define f1 (gen-if-exposed add-x add-y add-z side1 '()))
+          (define f2 (gen-if-exposed add-y add-x add-z side2 f1))
+          (define f3 (gen-if-exposed add-z add-x add-y top f2))
+          (define f4 (gen-if-exposed sub-x add-y add-z side3 f3))
+          (define f5 (gen-if-exposed sub-y add-x add-z side4 f4))
+          (define f6 (gen-if-exposed sub-z add-x add-y bottom f5))]
     (make-f-group type origin f6)))
 
 (define (air? block-type)
   (= block-type 0))
 (define (solid? block-type)
-  (= block-type 1))
+  (not (or (= block-type 0) (= block-type 7))))
 
 (define width 900)
 (define height 600)
@@ -694,7 +789,7 @@
   (local [(define vertices (map-verts (face-points face) player);(map (λ (point) (screen-pos point player)) (face-points face))
             )]
     (if (length-at-least? vertices 3)
-        (scene+polygon img;(scene+polygon img vertices "solid" "gray")
+        (scene+polygon (scene+polygon img vertices "solid" (face-color face))
                        vertices "outline" "black")
         img)))
 
@@ -788,7 +883,7 @@
 (define (gen-chunk-terrain-faces chunk)
   (local [
           (define (generate? type x y z)
-            (solid? type))
+            (not (air? type)))
           (define (for-block type x y z)
             (gen-block-exposed-faces chunk type (make-xyz x y z)))]
     (make-chunk (chunk-pos chunk) (chunk-blocks chunk) (chunk-entities chunk)
@@ -820,6 +915,64 @@
                                                (cons (op type x y z) groups)
                                                groups) x y) x y))]))]
     (iterate-x (chunk-blocks chunk) '())))
+
+; Linear Congruential Generator - pseudo-randomized number generator
+(define (lcg seed n)
+  (local [(define a 8)
+          (define c 3)
+          (define m 23)
+          (define (run-sequence n)
+            (cond [(zero? n) seed]
+                  [else (modulo (+ (* a (run-sequence (sub1 n))) c) m)]))]
+    (/ (run-sequence (abs n)) m)))
+
+(define (randint seed n range)
+  (- (round (* 2 range (lcg seed n))) range))
+
+(define world-seed 5)
+
+(define (hash-pos pos)
+  (+ (* (xyz-x pos) 5) (* (xyz-y pos) 11) (* (xyz-z pos) 2)))
+
+(define (randoffset-pos pos range)
+  (local [(define hashed (hash-pos pos))
+          (define xo (randint world-seed hashed range))
+          (define yo (randint world-seed (sub1 hashed) range))
+          (define zo (randint world-seed (add1 hashed) range))]
+    (add-xyz pos (make-xyz xo yo zo))))
+
+(define (gen-block-at pos)
+  (local [(define chunk-pos (xyz-map pos (λ (n) (floor-div n 16))))
+          (define surface-pos (set-z (scale-xyz chunk-pos 16) 1))
+          (define corner1 (randoffset-pos surface-pos 7))
+          (define corner2 (randoffset-pos (add-x surface-pos 16) 7))
+          (define corner3 (randoffset-pos (add-y surface-pos 16) 7))
+          (define corner4 (randoffset-pos (add-x (add-y surface-pos 16) 16) 7))
+          (define corners (list corner1 corner2 corner3 corner4))
+          (define (xy-posn xyz)
+            (make-posn (xyz-x xyz) (xyz-y xyz)))
+          (define (closer? a b)
+            (< (distance (xy-posn pos) (xy-posn a)) (distance (xy-posn pos) (xy-posn b))))
+          (define (closest-corner corners closest)
+            (cond [(empty? corners) closest]
+                  [(cons? corners) (closest-corner (rest corners)
+                                                   (if (closer? (first corners) closest)
+                                                       (first corners) closest))]))
+          (define (weighted-average corners heights distances total)
+            (cond [(empty? corners) (foldr (λ (height dist acc) (+ acc (* height (/ dist total)))) 0 heights distances)
+                                    ]
+                  [(cons? corners) (local [(define corner (first corners))
+                                           (define dist (distance (xy-posn pos) (xy-posn corner)))]
+                                     (weighted-average (rest corners)
+                                                       (cons (xyz-z corner) heights)
+                                                       (cons dist distances) (+ total dist)))]))
+          (define surface-height (ceiling (weighted-average corners '() '() 0)))
+          (define z (xyz-z pos))]
+    (cond [(< z surface-height) (if (< z (- surface-height 2))
+                                    2 4)]
+          [(= z surface-height) (if (< z 2) 3 1)]
+          [(> z surface-height) (if (< z 2) 7 0)])
+    ))
 
 ; gen-chunk : Position [Integer Integer Integer] -> Block
 (define (gen-chunk pos block-picker)
@@ -903,7 +1056,7 @@
           (define weight (/ (- z-facing cardinal) 90))
           (define d-pitch (angle-diff (pitch (entity-pos player) point) (xyz-x (entity-angle player))))
           (define x (+ (/ width 2) (* (/ (xyz-z da) fov-rad) (/ width 2))))
-          (define y (+ (/ width 2) (* (/ d-pitch fov-rad) (/ width 2))))]
+          (define y (+ (/ height 2) (* (/ d-pitch fov-rad) (/ width 2))))]
     (make-posn x y)))
 
 (define (t da)
@@ -951,6 +1104,11 @@
 (define (deg-cos a)
   (cos (deg->rad a)))
 
+; deg-tan : Number -> Number
+; Tangent for degrees.
+(define (deg-tan a)
+  (tan (deg->rad a)))
+
 ; deg-atan : Number Number -> Number
 ; Arctangent for degrees.
 (define (deg-atan dx dy)
@@ -974,8 +1132,34 @@
 (define (sign n)
   (if (< n 0) -1 1))
 
+(define (xyz->string xyz)
+  (local [(define (axis->string axis)
+            (local [(define val (axis xyz))]
+              (cond [(number? val) (number->string val)]
+                    [(string? val) val])))]
+    (string-append "(" (axis->string xyz-x) ", " (axis->string xyz-y) ", " (axis->string xyz-z) ")")))
+
+(define (set-dec-precision dec precision)
+  (local [(define multiplier (expt 10 precision))]
+    (/ (round (* dec multiplier)) multiplier)))
+
+(define (format-number-string num places length)
+  (local [(define (pad str n)
+            (if (< (string-length str) n)
+                (pad (string-append str "0") (sub1 n)) str))]
+    (pad (string-append (number->string (set-dec-precision num places)) ".") length)))
+
 (define (render-save save)
-  (overlay (text (number->string (xyz-z (entity-angle (save-player save)))) 12 "black") (render-world (save-world save) (save-player save))))
+  (local [(define cursor-block (f save))
+          (define world-render (render-world (save-world save) (save-player save)))
+          (define angle (xyz->string (xyz-map (entity-angle (save-player save)) (λ (num) (format-number-string num 3 8)))))
+          
+          (define indicator (circle 10 "outline" "black"))]
+    (if (boolean? cursor-block)
+        world-render
+        (local [(define sp (screen-pos (scale-xyz cursor-block block-size) (save-player save)))]
+          (place-image indicator (posn-x sp) (posn-y sp) (overlay (above (text angle 12 "black") (text (xyz->string cursor-block) 12 "black"))
+                                                                  world-render))))))
 ;(text (number->string (xyz-z (vector-angle (save-cam save)))) 12 "black")
 (define (rotate-player save)
   (local [(define vec (save-player save))
@@ -1058,7 +1242,7 @@
 (define chunkgen-solid-below (λ (top) (λ (pos) (if (<= (xyz-z pos) top) 1 0))))
 
 (define walk-accel (+ ground-friction .3))
-(define walk-speed 2)
+(define walk-speed 1)
 (define jump-speed 4)
 
 (define walk-action
@@ -1130,12 +1314,24 @@
 
 (define (set-save-player save player)
   (make-save player (save-world save) (save-actions save)))
+
+(define (gen-current-chunk save)
+  (local [(define block-pos (realpos->blockpos (entity-pos (save-player save))))
+          (define chunk-pos (xyz-map block-pos (λ (val) (floor-div val 16))))
+          (define world (save-world save))]
+    (if (boolean? (chunk-at-block block-pos world))
+        (make-save (save-player save) (make-world (cons (gen-chunk chunk-pos gen-block-at)
+                                                        (world-chunks world))) (save-actions save))
+        save)))
 ; Actions boolean
 (define (process-actions save)
   (local [(define actions (save-actions save))
-          (define player (save-player save))]
-    (fold-over-map actions (λ (_ do-action old-save) (do-action old-save))
-                   (set-save-player save (step-entity-physics (save-player save) (save-world save))))))
+          (define player (save-player save))
+          (define apply-actions
+            (fold-over-map
+                                 actions (λ (_ do-action old-save) (do-action old-save))
+                   (set-save-player save (step-entity-physics (save-player save) (save-world save)))))]
+    (gen-current-chunk apply-actions)))
 
 (define (set-collider entity collider)
   (make-entity (entity-id entity) collider (entity-angle entity) (entity-faces entity)))
@@ -1170,17 +1366,28 @@
                        (gen-chunk 1 (make-xyz -1 -1 0))
                        (gen-chunk 1 (make-xyz -1 0 0))
                        (gen-chunk 1 (make-xyz 0 0 0)) '()))
-(define chunk0 (gen-chunk (make-xyz 0 0 0) (chunkgen-solid-below 0)))
-(define chunk1 (set-chunk-block chunk0 (make-xyz 5 5 2) 1))
-(define chunk2 (set-chunk-block chunk1 (make-xyz 5 6 1) 1))
-(define chunks (list (gen-chunk-terrain-faces chunk2)))
+;(define chunk0 (gen-chunk (make-xyz 0 0 0) (chunkgen-solid-below 0)))
+(define chunk0 (gen-chunk (make-xyz 0 -1 0) gen-block-at))
+(define chunk1 (set-chunk-block chunk0 (make-xyz 5 5 3) 0))
+(define chunk2 (set-chunk-block chunk1 (make-xyz 5 5 2) 0))
+(define chunk3 (set-chunk-block chunk2 (make-xyz 5 5 1) 0))
+(define chunk4 (set-chunk-block chunk3 (make-xyz 5 5 0) 0))
+(define chunks (list (gen-chunk-terrain-faces chunk4)))
 (define world0 (make-world chunks))
+(define save0 (make-save (direct (set-vel (make-steve (make-xyz 5 -4 9)) (make-xyz 0 0 -.1)) (make-xyz -10 0 0)) world0 (make-linmap string=? '())))
+(big-bang save0
+    (to-draw render-save)
+    (on-key action-logger)
+    (on-release action-ender)
+    (on-tick process-actions))
 
-(big-bang (make-save (set-vel (make-steve (make-xyz 5 4 1.5)) (make-xyz 0 0 -.1)) world0 (make-linmap string=? '()))
-  (to-draw render-save)
-  (on-key action-logger)
-  (on-release action-ender)
-  (on-tick process-actions))
+(define (s save new-angle)
+  (set-save-player save (direct (save-player save) new-angle)))
+
+(define (test angle)
+  (local [(define found (f (s save0 angle)))]
+    (if (boolean? found)
+        #f (xyz-map found (λ (num) (set-dec-precision num 3))))))
 
 (define c (make-collider .3 1 (scale-xyz (make-xyz 5 5 4) block-size) (scale-xyz (make-xyz 0 0 -40) block-size)))
 (block-collision-pos (set-vel (make-steve (make-xyz 0 0 2.46)) (make-xyz 0 0 -.02)) world0 solid? xyz-z xyz-x xyz-y)
