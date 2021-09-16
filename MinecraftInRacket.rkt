@@ -13,7 +13,7 @@
 (define-struct vector (pos angle))
 ; A Vector is a (make-vector Position Angle) and represents a vector in 3D space.
 
-(define-struct save (player world actions))
+(define-struct save (player cursor-pos break-progress world actions))
 ; A Save is a (make-save Vector World [Map-of Key [Save -> Save]]) that represents game data where 'cam' is the player view
 ; orientation and 'world' is the world data.
 
@@ -73,7 +73,7 @@
 
 ; PHYSICS
 (define gravity -.4)
-(define make-steve (λ (pos) (tp (spawn "steve" (make-xyz .3 .3 1) '()) pos)))
+(define make-steve (λ (pos) (tp (spawn "steve" (make-xyz .3 .3 .9) '()) pos)))
 
 #;(define (set-collider-pos collider new-pos)
     (make-collider (collider-hrad collider) (collider-vrad collider) new-pos
@@ -284,10 +284,7 @@
                       (if (<= (abs ratio) 1)
                           (local [(define block-pos (block-pos-at-ratio ratio))]
                             (if (solid? (get-world-block world block-pos))
-                                (local [(define (h val)
-                                          (if (= val (- (ceiling val) .5)) val (round val)))]
-                                  (xyz-map (add-xyz pos (scale-xyz distances ratio)) h))
-                                (search new-x-face new-y-face new-z-face)))
+                                block-pos (search new-x-face new-y-face new-z-face)))
                           #f))]
               (cond [(<=others x-ratio y-ratio z-ratio)
                      (iterate x-ratio (+ x-face x-sign) y-face z-face)]
@@ -298,7 +295,7 @@
     (search (relative-start xyz-x) (relative-start xyz-y) (relative-start xyz-z))
     ))
 
-(define (f save)
+(define (find-cursor-pos save)
   (local [(define player (save-player save))
           (define world (save-world save))]
     (cursor-blockface-intersects
@@ -444,11 +441,22 @@
     (try-get (try-get (try-get blocks xyz-x) xyz-y) xyz-z)))
 
 (define (world-to-chunk-pos pos)
-  (xyz-map (λ (axis) (mod axis 16)) pos))
+  (xyz-map pos (λ (axis) (mod axis 16))))
+
+(define (set-world-chunk world chunk)
+  (local [(define pos (chunk-pos chunk))
+          (define (set chunks)
+            (cond [(empty? chunks) (cons chunk '())]
+                  [(cons? chunks) (if (xyz=? (chunk-pos (first chunks)) pos)
+                                      (cons chunk (rest chunks))
+                                      (cons (first chunks) (set (rest chunks))))]))]
+    (make-world (set (world-chunks world)))))
 
 (define (set-world-block world pos type)
-  (local [(define local-pos (world-to-chunk-pos pos))]
-    (t-element-op )))
+  (local [(define local-pos (world-to-chunk-pos pos))
+          (define chunk-pos (xyz-map pos (λ (val) (floor-div val 16))))
+          (define chunk (get-chunk chunk-pos (world-chunks world)))]
+    (set-world-chunk world (gen-chunk-terrain-faces (set-chunk-block chunk local-pos type)))))
 ;(t-element-op tree index op)
 ;(pos blocks entities block-faces entity-faces)
 
@@ -1150,30 +1158,30 @@
     (pad (string-append (number->string (set-dec-precision num places)) ".") length)))
 
 (define (render-save save)
-  (local [(define cursor-block (f save))
+  (local [(define cursor-pos (find-cursor-pos save))
           (define world-render (render-world (save-world save) (save-player save)))
           (define angle (xyz->string (xyz-map (entity-angle (save-player save)) (λ (num) (format-number-string num 3 8)))))
           
           (define indicator (circle 10 "outline" "black"))]
-    (if (boolean? cursor-block)
+    (if (boolean? cursor-pos)
         world-render
-        (local [(define sp (screen-pos (scale-xyz cursor-block block-size) (save-player save)))]
-          (place-image indicator (posn-x sp) (posn-y sp) (overlay (above (text angle 12 "black") (text (xyz->string cursor-block) 12 "black"))
+        (local [(define sp (screen-pos (scale-xyz cursor-pos block-size) (save-player save)))]
+          (place-image indicator (posn-x sp) (posn-y sp) (overlay (text (number->string (save-break-progress save)) 12 "black")
                                                                   world-render))))))
 ;(text (number->string (xyz-z (vector-angle (save-cam save)))) 12 "black")
-(define (rotate-player save)
-  (local [(define vec (save-player save))
-          (define rot (entity-angle vec))
-          (define new-rot (make-xyz (+ (xyz-x rot) 0) (+ (xyz-y rot) 0) (+ (xyz-z rot) 0)))]
-    (set-player-vector save (make-vector (vector-pos vec) new-rot))))
+#;(define (rotate-player save)
+    (local [(define vec (save-player save))
+            (define rot (entity-angle vec))
+            (define new-rot (make-xyz (+ (xyz-x rot) 0) (+ (xyz-y rot) 0) (+ (xyz-z rot) 0)))]
+      (set-player-vector save (make-vector (vector-pos vec) new-rot))))
 
-(define (move-player save)
-  (local [(define vec (save-player save))
-          (define loc (entity-pos vec))
-          (define rot (entity-angle vec))
-          (define new-loc (make-xyz (xyz-x loc) (+ (xyz-y loc) 0) (+ (xyz-z loc) 0)))
-          (define new-rot (make-xyz (+ (xyz-x rot) 0) (+ (xyz-y rot) 0) (+ (xyz-z rot) 1)))]
-    (set-player-vector save (make-vector new-loc new-rot))))
+#;(define (move-player save)
+    (local [(define vec (save-player save))
+            (define loc (entity-pos vec))
+            (define rot (entity-angle vec))
+            (define new-loc (make-xyz (xyz-x loc) (+ (xyz-y loc) 0) (+ (xyz-z loc) 0)))
+            (define new-rot (make-xyz (+ (xyz-x rot) 0) (+ (xyz-y rot) 0) (+ (xyz-z rot) 1)))]
+      (set-player-vector save (make-vector new-loc new-rot))))
 
 (define-struct pair (fst snd))
 
@@ -1262,6 +1270,10 @@
                      (make-pair "a" (to-player (walk-action 90)))
                      (make-pair "s" (to-player (walk-action 180)))
                      (make-pair "d" (to-player (walk-action 270)))
+                     (make-pair "/" (λ (save)
+                                      (local [(define break-progress (save-break-progress save))]
+                                        (if (boolean? break-progress)
+                                            save (set-break-progress save (sub1 break-progress))))))
                      (make-pair
                       " "
                       (λ (save)
@@ -1287,16 +1299,20 @@
                       (to-player (λ (player)
                                    (pan-horizontally player (- pan-speed))))))))
 
+(define (set-save-actions save actions)
+  (make-save (save-player save) (save-cursor-pos save) (save-break-progress save)
+             (save-world save) actions))
+
 (define (action-logger save key)
   (local [(define (log-action action)
-            (make-save (save-player save) (save-world save) (map-put (save-actions save) key action)))
+            (set-save-actions save (map-put (save-actions save) key action)))
           (define action (map-get keymap key))]
     (if (boolean? action)
         save (log-action action))))
 
 (define (action-ender save key)
   (local [(define (delog-action action)
-            (make-save (save-player save) (save-world save) (map-remove (save-actions save) action)))]
+            (set-save-actions save (map-remove (save-actions save) action)))]
     (delog-action key)))
 
 (define (contains? list item)
@@ -1313,25 +1329,55 @@
 (define pan-speed 2)
 
 (define (set-save-player save player)
-  (make-save player (save-world save) (save-actions save)))
+  (make-save player (save-cursor-pos save) (save-break-progress save) (save-world save)
+             (save-actions save)))
+
+(define (set-cursor-pos save cursor-pos)
+  (make-save (save-player save) cursor-pos (save-break-progress save) (save-world save)
+             (save-actions save)))
+
+(define (set-break-progress save break-progress)
+  (make-save (save-player save) (save-cursor-pos save) break-progress (save-world save)
+             (save-actions save)))
+
+(define (set-save-world save world)
+  (make-save (save-player save) (save-cursor-pos save) (save-break-progress save) world
+             (save-actions save)))
 
 (define (gen-current-chunk save)
   (local [(define block-pos (realpos->blockpos (entity-pos (save-player save))))
           (define chunk-pos (xyz-map block-pos (λ (val) (floor-div val 16))))
           (define world (save-world save))]
     (if (boolean? (chunk-at-block block-pos world))
-        (make-save (save-player save) (make-world (cons (gen-chunk chunk-pos gen-block-at)
-                                                        (world-chunks world))) (save-actions save))
+        (set-save-world save (make-world (cons (gen-chunk chunk-pos gen-block-at)
+                                               (world-chunks world))))
         save)))
+
+(define (update-cursor-pos save)
+  (local [(define previous (save-cursor-pos save))
+          (define current (find-cursor-pos save))
+          (define break-progress (save-break-progress save))
+          (define reset (set-cursor-pos (set-break-progress save 30) current))]
+    (cond [(and (boolean? previous) (xyz? current))
+           reset]
+          [(and (xyz? previous) (boolean? current))
+           (set-cursor-pos (set-break-progress save #f) #f)]
+          [(and (xyz? previous) (xyz? current))
+           (if (xyz=? previous current)
+               (if (= break-progress 0)
+                   (set-save-world reset (set-world-block (save-world save) current 0)) save)
+               reset)]
+          [else save])))
 ; Actions boolean
 (define (process-actions save)
   (local [(define actions (save-actions save))
           (define player (save-player save))
           (define apply-actions
             (fold-over-map
-                                 actions (λ (_ do-action old-save) (do-action old-save))
-                   (set-save-player save (step-entity-physics (save-player save) (save-world save)))))]
-    (gen-current-chunk apply-actions)))
+             actions (λ (_ do-action old-save) (do-action old-save))
+             (set-save-player save (step-entity-physics (save-player save) (save-world save)))))
+          (define gen-current (gen-current-chunk apply-actions))]
+    (update-cursor-pos gen-current)))
 
 (define (set-collider entity collider)
   (make-entity (entity-id entity) collider (entity-angle entity) (entity-faces entity)))
@@ -1340,13 +1386,13 @@
             (define new-player (set-collider player (step-collider (entity-hitbox player) (save-world save))))]
       (make-save new-player (save-world save) (save-actions save))))
 
-(define (set-player-vector save vector)
-  (local [(define player (save-player save))
-          (define collider player)
-          (define new-player
-            (make-entity 0 (set-pos collider (vector-pos vector))
-                         (vector-angle vector) (entity-faces player)))]
-    (make-save new-player (save-world save) (save-actions save))))
+#;(define (set-player-vector save vector)
+    (local [(define player (save-player save))
+            (define collider player)
+            (define new-player
+              (make-entity 0 (set-pos collider (vector-pos vector))
+                           (vector-angle vector) (entity-faces player)))]
+      (make-save new-player (save-world save) (save-actions save))))
 
 (define (pan-horizontally entity angle)
   (direct entity (add-z (entity-angle entity) angle)))
@@ -1374,18 +1420,19 @@
 (define chunk4 (set-chunk-block chunk3 (make-xyz 5 5 0) 0))
 (define chunks (list (gen-chunk-terrain-faces chunk4)))
 (define world0 (make-world chunks))
-(define save0 (make-save (direct (set-vel (make-steve (make-xyz 5 -4 9)) (make-xyz 0 0 -.1)) (make-xyz -10 0 0)) world0 (make-linmap string=? '())))
+(define sbeve (direct (set-vel (make-steve (make-xyz 5 -4 9)) (make-xyz 0 0 -.1)) (make-xyz -10 0 0)))
+(define save0 (make-save sbeve #f #f world0 (make-linmap string=? '())))
 (big-bang save0
-    (to-draw render-save)
-    (on-key action-logger)
-    (on-release action-ender)
-    (on-tick process-actions))
+  (to-draw render-save)
+  (on-key action-logger)
+  (on-release action-ender)
+  (on-tick process-actions))
 
 (define (s save new-angle)
   (set-save-player save (direct (save-player save) new-angle)))
 
 (define (test angle)
-  (local [(define found (f (s save0 angle)))]
+  (local [(define found (find-cursor-pos (s save0 angle)))]
     (if (boolean? found)
         #f (xyz-map found (λ (num) (set-dec-precision num 3))))))
 
